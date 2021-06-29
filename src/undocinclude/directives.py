@@ -66,7 +66,7 @@ class UndocIncludeReader:
                    self.dedent_filter]
         lines = self.read_file(self.filename, location=location)
         parsed = ast.parse(''.join(lines), filename=self.filename)
-        ast.fix_missing_locations(parsed)
+        parsed = ast.fix_missing_locations(parsed)
 
         # Yes, using a set for this is inefficient. I give you permission to
         # make fun of me when this becomes a problem.
@@ -81,10 +81,21 @@ class UndocIncludeReader:
             if docstring is None:
                 continue
 
-            docstring_node = node.body[0].value  # type: ignore
+            body = node.body  # type: ignore
+            docstring_node = body[0].value
+
+            try:
+                # Python >= 3.8
+                end_lineno = docstring_node.end_lineno
+                lineno = docstring_node.lineno - 1
+            except AttributeError:
+                # Python 3.7
+                end_lineno = docstring_node.lineno
+                lineno = end_lineno - len(docstring_node.s.split('\n'))
+
             self.docstring_lines |= set(range(
-                docstring_node.lineno - 1,
-                docstring_node.end_lineno
+                lineno,
+                end_lineno
             ))
 
         for func in filters:
