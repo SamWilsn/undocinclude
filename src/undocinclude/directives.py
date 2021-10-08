@@ -7,8 +7,8 @@ from docutils.nodes import Element, Node
 from docutils import nodes
 
 from sphinx.util import logging, parselinenos
-from sphinx.directives import SphinxDirective, optional_int
-from sphinx.directives.code import dedent_lines, container_wrapper
+from sphinx.directives import SphinxDirective
+from sphinx.directives.code import container_wrapper
 from sphinx.config import Config
 from sphinx.locale import __
 from sphinx.util.typing import OptionSpec
@@ -20,10 +20,6 @@ logger = logging.getLogger(__name__)
 class UndocIncludeReader:
     INVALID_OPTIONS_PAIR = [
         ('lineno-match', 'lineno-start'),
-        ('lineno-match', 'append'),
-        ('lineno-match', 'prepend'),
-        ('start-after', 'start-at'),
-        ('end-before', 'end-at'),
     ]
 
     def __init__(self, filename: str, options: Dict, config: Config) -> None:
@@ -57,13 +53,7 @@ class UndocIncludeReader:
                                (self.encoding, filename)) from exc
 
     def read(self, location: Tuple[str, int] = None) -> Tuple[str, int]:
-        filters = [self.pyobject_filter,
-                   self.start_filter,
-                   self.end_filter,
-                   self.lines_filter,
-                   self.prepend_filter,
-                   self.append_filter,
-                   self.dedent_filter]
+        filters = [self.pyobject_filter, self.lines_filter]
         lines = self.read_file(self.filename, location=location)
         parsed = ast.parse(''.join(lines), filename=self.filename)
         parsed = ast.fix_missing_locations(parsed)
@@ -98,12 +88,16 @@ class UndocIncludeReader:
                 end_lineno
             ))
 
+        filter_lines = [(line, True) for line in lines]
+
         for func in filters:
-            lines = func(lines, location=location)
+            filter_lines = func(filter_lines, location=location)
+
+        lines = [line[0] for line in filter_lines if line[1]]
 
         return ''.join(lines), len(lines)
 
-    def pyobject_filter(self, lines: List[str], location: Tuple[str, int] = None) -> List[str]:
+    def pyobject_filter(self, lines: List[Tuple[str, bool]], location: Tuple[str, int] = None) -> List[Tuple[str, bool]]:
         pyobject = self.options.get('pyobject')
         if pyobject:
             from sphinx.pycode import ModuleAnalyzer
@@ -115,18 +109,21 @@ class UndocIncludeReader:
             else:
                 start = tags[pyobject][1]
                 end = tags[pyobject][2]
-                lines = lines[start - 1:end]
+                r = range(start - 1, end)
+                lines = [(t, i and n in r) for (n, (t, i)) in enumerate(lines)]
                 if 'lineno-match' in self.options:
                     self.lineno_start = start
 
         return lines
 
-    def lines_filter(self, lines: List[str], location: Tuple[str, int] = None) -> List[str]:
+    def lines_filter(self, lines: List[Tuple[str, bool]], location: Tuple[str, int] = None) -> List[Tuple[str, bool]]:
         linespec = self.options.get('lines')
         if linespec:
             linelist = parselinenos(linespec, len(lines))
         else:
-            linelist = range(len(lines))
+            linelist = list(range(len(lines)))
+
+        print(f"location={location} linespec={linespec} linelist={linelist} options={self.options}")
 
         if self.docstring_lines:
             linelist = list(set(linelist) - self.docstring_lines)
@@ -145,93 +142,12 @@ class UndocIncludeReader:
                 raise ValueError(__('Cannot use "lineno-match" with a disjoint '
                                     'set of "lines"'))
 
-        lines = [lines[n] for n in linelist if n < len(lines)]
-        if lines == []:
+        lines = [(t, i and n in linelist) for (n, (t, i)) in enumerate(lines)]
+        if not any(v for (_, v) in lines):
             raise ValueError(__('Line spec %r: no lines pulled from include file %r') %
                              (linespec, self.filename))
 
         return lines
-
-    def start_filter(self, lines: List[str], location: Tuple[str, int] = None) -> List[str]:
-        if 'start-at' in self.options:
-            start = self.options.get('start-at')
-            inclusive = False
-        elif 'start-after' in self.options:
-            start = self.options.get('start-after')
-            inclusive = True
-        else:
-            start = None
-
-        if start:
-            for lineno, line in enumerate(lines):
-                if start in line:
-                    if inclusive:
-                        if 'lineno-match' in self.options:
-                            self.lineno_start += lineno + 1
-
-                        return lines[lineno + 1:]
-                    else:
-                        if 'lineno-match' in self.options:
-                            self.lineno_start += lineno
-
-                        return lines[lineno:]
-
-            if inclusive is True:
-                raise ValueError('start-after pattern not found: %s' % start)
-            else:
-                raise ValueError('start-at pattern not found: %s' % start)
-
-        return lines
-
-    def end_filter(self, lines: List[str], location: Tuple[str, int] = None) -> List[str]:
-        if 'end-at' in self.options:
-            end = self.options.get('end-at')
-            inclusive = True
-        elif 'end-before' in self.options:
-            end = self.options.get('end-before')
-            inclusive = False
-        else:
-            end = None
-
-        if end:
-            for lineno, line in enumerate(lines):
-                if end in line:
-                    if inclusive:
-                        return lines[:lineno + 1]
-                    else:
-                        if lineno == 0:
-                            pass  # end-before ignores first line
-                        else:
-                            return lines[:lineno]
-            if inclusive is True:
-                raise ValueError('end-at pattern not found: %s' % end)
-            else:
-                raise ValueError('end-before pattern not found: %s' % end)
-
-        return lines
-
-    def prepend_filter(self, lines: List[str], location: Tuple[str, int] = None) -> List[str]:
-        prepend = self.options.get('prepend')
-        if prepend:
-            lines.insert(0, prepend + '\n')
-
-        return lines
-
-    def append_filter(self, lines: List[str], location: Tuple[str, int] = None) -> List[str]:
-        append = self.options.get('append')
-        if append:
-            lines.append(append + '\n')
-
-        return lines
-
-    def dedent_filter(self, lines: List[str], location: Tuple[str, int] = None) -> List[str]:
-        if 'dedent' in self.options:
-            dedent = self.options.get('dedent')
-            if not isinstance(dedent, (int, str)):
-                raise TypeError('dedent must be a str or int')
-            return dedent_lines(lines, int(dedent), location=location)
-        else:
-            return lines
 
 
 class UndocInclude(SphinxDirective):
@@ -246,7 +162,6 @@ class UndocInclude(SphinxDirective):
     optional_arguments = 0
     final_argument_whitespace = True
     option_spec: OptionSpec = {
-        'dedent': optional_int,
         'linenos': directives.flag,
         'lineno-start': int,
         'lineno-match': directives.flag,
@@ -256,10 +171,6 @@ class UndocInclude(SphinxDirective):
         'encoding': directives.encoding,
         'pyobject': directives.unchanged_required,
         'lines': directives.unchanged_required,
-        'start-after': directives.unchanged_required,
-        'end-before': directives.unchanged_required,
-        'start-at': directives.unchanged_required,
-        'end-at': directives.unchanged_required,
         'prepend': directives.unchanged_required,
         'append': directives.unchanged_required,
         'emphasize-lines': directives.unchanged_required,
