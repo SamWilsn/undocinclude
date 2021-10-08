@@ -123,8 +123,6 @@ class UndocIncludeReader:
         else:
             linelist = list(range(len(lines)))
 
-        print(f"location={location} linespec={linespec} linelist={linelist} options={self.options}")
-
         if self.docstring_lines:
             linelist = list(set(linelist) - self.docstring_lines)
             linelist.sort()
